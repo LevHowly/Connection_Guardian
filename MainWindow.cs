@@ -12,13 +12,17 @@ public sealed class MainWindow : Window
 
     private readonly Configuration configuration;
     private readonly Guardian guardian;
+    private readonly SessionLog sessionLog;
     private readonly Action save;
+    private string note = string.Empty;
+    private string? logMessage;
 
-    public MainWindow(Configuration configuration, Guardian guardian, Action save)
+    public MainWindow(Configuration configuration, Guardian guardian, SessionLog sessionLog, Action save)
         : base("Connection Guardian###ConnectionGuardianMain")
     {
         this.configuration = configuration;
         this.guardian = guardian;
+        this.sessionLog = sessionLog;
         this.save = save;
         SizeConstraints = new WindowSizeConstraints
         {
@@ -30,6 +34,9 @@ public sealed class MainWindow : Window
     public override void Draw()
     {
         ImGui.TextColored(guardian.Available ? Good : Bad, guardian.Status);
+        ImGui.TextColored(Dim, $"Network: {guardian.NetworkSummary}");
+
+        DrawLogs();
 
         if (ImGui.CollapsingHeader("Settings"))
             DrawSettings();
@@ -43,9 +50,61 @@ public sealed class MainWindow : Window
 
         ImGui.Separator();
         ImGui.Text("Events");
-        ImGui.SameLine();
-        ImGui.TextColored(Dim, $"(also written to {guardian.LogPath})");
         DrawEvents();
+    }
+
+    private void DrawLogs()
+    {
+        ImGui.Separator();
+        ImGui.Text("Logs");
+        ImGui.SameLine();
+        ImGui.TextColored(Dim, SessionLog.ToLinuxPath(sessionLog.FilePath));
+        if (ImGui.Button("Open log file"))
+            Try(() => SessionLog.Open(sessionLog.FilePath), null);
+        ImGui.SameLine();
+        if (ImGui.Button("Open logs folder"))
+            Try(() => SessionLog.Open(sessionLog.LogDirectory), null);
+        ImGui.SameLine();
+        if (ImGui.Button("Create zip to share"))
+        {
+            Try(() =>
+            {
+                var zip = sessionLog.CreateShareZip();
+                SessionLog.Open(sessionLog.ConfigDirectory);
+                logMessage = $"Created {SessionLog.ToLinuxPath(zip)} - send this file.";
+            }, null);
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Zips all session logs (and the drop_internet.sh log) into one file and opens its folder.");
+
+        ImGui.SetNextItemWidth(-90);
+        var submitted = ImGui.InputTextWithHint("##note", "Note for the log, e.g. \"got logged out\" or \"world froze\"", ref note, 500, ImGuiInputTextFlags.EnterReturnsTrue);
+        ImGui.SameLine();
+        if ((ImGui.Button("Add note") || submitted) && note.Trim().Length > 0)
+        {
+            guardian.AddNote(note);
+            note = string.Empty;
+            logMessage = "Note added.";
+        }
+
+        if (logMessage != null)
+            ImGui.TextColored(Good, logMessage);
+        ImGui.Separator();
+    }
+
+    private void Try(Action action, string? success)
+    {
+        try
+        {
+            action();
+            if (success != null)
+                logMessage = success;
+        }
+        catch (Exception ex)
+        {
+            logMessage = $"Failed: {ex.Message}";
+        }
     }
 
     private void DrawSettings()
@@ -179,7 +238,7 @@ public sealed class MainWindow : Window
 
         foreach (var e in guardian.GetEvents())
         {
-            ImGui.TextColored(Dim, e.Time.ToString("HH:mm:ss"));
+            ImGui.TextColored(Dim, $"{e.Time:HH:mm:ss} {e.Category}");
             ImGui.SameLine();
             if (e.Important)
                 ImGui.TextColored(new Vector4(1f, 0.85f, 0.4f, 1f), e.Message);

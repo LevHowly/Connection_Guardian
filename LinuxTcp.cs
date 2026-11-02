@@ -92,6 +92,18 @@ public static unsafe class LinuxTcp
         if (!TryFindOwnLinuxProcess(out var linuxPid, out var maps, out error))
             return false;
 
+        if (WineVersion == "unknown")
+        {
+            // e.g. ".../wine-xiv-staging-fsync-git-10.8.r0.a2ca9e4-nolsc/lib/wine/x86_64-unix/ntdll.so"
+            var ntdllPath = maps.Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? string.Empty)
+                .FirstOrDefault(path => path.EndsWith("/ntdll.so", StringComparison.Ordinal));
+            var root = ntdllPath != null && ntdllPath.LastIndexOf("/wine/", StringComparison.Ordinal) is var cut and > 0 ? ntdllPath[..cut] : string.Empty;
+            if (root.EndsWith("/lib64", StringComparison.Ordinal) || root.EndsWith("/lib", StringComparison.Ordinal))
+                root = root[..root.LastIndexOf('/')];
+            if (root.Length > 0)
+                WineVersion = $"{Path.GetFileName(root)} ({root})";
+        }
+
         // Wine builds with syscall emulation (Proton / wine-xiv) install a seccomp filter that traps
         // syscall instructions executed from Windows code. Syscalls issued from inside the native
         // libc are allowed, so we jump to a "syscall; ret" sequence located there.
