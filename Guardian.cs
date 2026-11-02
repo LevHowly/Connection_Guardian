@@ -36,6 +36,7 @@ public sealed class Guardian : IDisposable
     private long scriptLogPosition = -1;
     private DateTime? scriptCut;
     private DateTime? scriptRestored;
+    private DateTime? scriptReachable;
     private bool forceRescan = true;
     private ITcpBackend? backend;
 
@@ -394,12 +395,15 @@ public sealed class Guardian : IDisposable
             }
         }
 
-        // The game receives data continuously; a long silence without unacked data is also worth noting.
-        var rxSilent = info.LastDataRecvMs >= RxSilenceMs && connection.Outage == null && info.State == 1;
+        // Some game connections only hear from the server every ~10 s, so a silence is only reported when
+        // it is clearly longer than the gaps this connection normally has.
+        if (hadInfo && info.LastDataRecvMs < previous.LastDataRecvMs && connection.Outage == null)
+            connection.RecordGap(previous.LastDataRecvMs);
+        var rxSilent = info.LastDataRecvMs >= connection.SilenceThresholdMs(RxSilenceMs) && connection.Outage == null && info.State == 1;
         if (rxSilent && !connection.RxSilent)
         {
             connection.DetailUntil = now.AddSeconds(DetailAfterOutageSeconds);
-            AddEvent("SILENCE", $"{connection.Name}: no data from server for {info.LastDataRecvMs} ms (nothing unacknowledged, so we may simply have nothing to send). Network: {network.Summary}", false);
+            AddEvent("SILENCE", $"{connection.Name}: no data from server for {info.LastDataRecvMs} ms (usual longest gap {connection.UsualGapMs} ms; nothing unacknowledged, so we may simply have nothing to send). Network: {network.Summary}", false);
         }
         else if (!rxSilent && connection.RxSilent && connection.Outage == null)
         {
@@ -420,8 +424,17 @@ public sealed class Guardian : IDisposable
             ? $"; script cut the network at {cut:HH:mm:ss.fff}"
             : string.Empty;
         var restoreText = scriptRestored is { } restore && restore > outage.Start
-            ? $"{cutText}; network restored by script at {restore:HH:mm:ss.fff} (network was down {Seconds(restore - outage.Start)} s)"
+            ? $"{cutText}; network restored by script at {restore:HH:mm:ss.fff}" +
+              (scriptCut is { } c && c < restore ? $" (cut for {Seconds(restore - c)} s)" : string.Empty)
             : string.Empty;
+        if (restoreText.Length > 0 && scriptReachable is { } reachable && reachable > scriptRestored)
+        {
+            restoreText += $"; internet reachable at {reachable:HH:mm:ss.fff}";
+            if (outage.AckBack is { } ack)
+                restoreText += $", PC->server back {Seconds(ack - reachable)} s after that";
+            if (outage.DataBack is { } data)
+                restoreText += $", server->PC back {Seconds(data - reachable)} s after that";
+        }
         AddEvent("SUMMARY", $"{connection.Name}: outage {end}. Started {outage.Start:HH:mm:ss.fff}{restoreText}; " +
                             $"PC->server back {(outage.AckBack is { } a ? $"+{Seconds(a - outage.Start)} s" : "never")}, " +
                             $"server->PC back {(outage.DataBack is { } d ? $"+{Seconds(d - outage.Start)} s" : "never")}; " +
@@ -489,6 +502,8 @@ public sealed class Guardian : IDisposable
                         scriptCut = time;
                     else if (line.Contains(" RESTORED ", StringComparison.Ordinal))
                         scriptRestored = time;
+                    else if (line.Contains(" internet reachable again", StringComparison.Ordinal))
+                        scriptReachable = time;
                 }
             }
 
@@ -585,6 +600,18 @@ public sealed class Guardian : IDisposable
         public Outage? Outage;
         public bool RxSilent;
         public DateTime? WaitingSince;
+        private readonly Queue<long> gaps = new();
+
+        public long UsualGapMs => gaps.Count == 0 ? 0 : gaps.Max();
+
+        public void RecordGap(long ms)
+        {
+            gaps.Enqueue(ms);
+            if (gaps.Count > 20)
+                gaps.Dequeue();
+        }
+
+        public long SilenceThresholdMs(long minimum) => Math.Min(Math.Max(minimum, UsualGapMs * 2), 60000);
         public DateTime DetailUntil;
         public DateTime LastSample;
         public int Outages;

@@ -121,7 +121,7 @@ zip. Each file has:
   `CONN` connection found or state change, `TUNE` settings applied and read back,
   `OUTAGE` data waiting for the server (unacknowledged, or the PC cannot send at all) for 2 s, `RECOVER` each direction working again,
   `SUMMARY` one line per outage with all timings, `CLOSE` who ended a connection (server / reset or
-  timeout / game), `SILENCE` server sent nothing for 5 s, `NET` default route, interface state and Wi-Fi
+  timeout / game), `SILENCE` server sent nothing for 5 s, or twice the connection's usual longest gap, `NET` default route, interface state and Wi-Fi
   link, `GAME` login/logout (with the logout code)/zone change, `SCRIPT` lines from `drop_internet.sh`,
   `NOTE` your notes, `OTHER` the game's TCP connections outside the monitored ports, `DIAG` internal
   problems (for example a Windows API that is not available);
