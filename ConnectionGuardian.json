@@ -1,0 +1,6 @@
+{
+  "Name": "Connection Guardian",
+  "Author": "LevHowly",
+  "Description": "Monitors the game's TCP connections and keeps them retrying fast during short internet outages so you are not logged out. Linux/Wine only.",
+  "Punchline": "Survive short internet drops without being logged out."
+}
