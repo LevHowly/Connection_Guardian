@@ -336,15 +336,24 @@ public sealed class Guardian : IDisposable
             AddEvent("CONN", $"{connection.Name}: TCP state {StateName(previous.State)} -> {StateName(info.State)}{StateMeaning(info.State)}", info.State != 1);
         }
 
-        // Data is outstanding and the server has not acknowledged anything for a while. A single lost
-        // packet also causes backoff, so backoff alone is not treated as an outage.
-        var stalled = info.Unacked > 0 && info.LastAckRecvMs >= configuration.StallAckMs;
+        // We are waiting on the server when data is unacknowledged, or when the kernel is backing off
+        // with nothing in flight (it cannot transmit at all, e.g. the route is gone). The wait is timed
+        // from when that started, not from the last ACK: a quiet connection that sends a heartbeat
+        // every 10 s would otherwise look stalled for a moment on every heartbeat.
+        var waiting = info.Unacked > 0 || info.Backoff > 0;
+        if (!waiting)
+            connection.WaitingSince = null;
+        else
+            connection.WaitingSince ??= now.AddMilliseconds(-Math.Min(info.LastAckRecvMs, PollIntervalMs));
+        var waitedMs = waiting ? Math.Min(info.LastAckRecvMs, (long)(now - connection.WaitingSince!.Value).TotalMilliseconds) : 0;
+        var stalled = waiting && waitedMs >= configuration.StallAckMs;
         if (stalled && connection.Outage == null)
         {
-            connection.Outage = new Outage(now.AddMilliseconds(-Math.Min(info.LastAckRecvMs, 60000)), info);
+            connection.Outage = new Outage(now.AddMilliseconds(-Math.Min(waitedMs, 60000)), info);
             connection.Outages++;
-            AddEvent("OUTAGE", $"{connection.Name}: OUTAGE #{connection.Outages} - no ACK from server for {info.LastAckRecvMs} ms, " +
-                               $"{info.Unacked} packets unacknowledged, last data from server {info.LastDataRecvMs} ms ago. " +
+            AddEvent("OUTAGE", $"{connection.Name}: OUTAGE #{connection.Outages} - no ACK from server for {waitedMs} ms " +
+                               $"(last ACK {info.LastAckRecvMs} ms ago), {info.Unacked} packets unacknowledged, backoff {info.Backoff}, " +
+                               $"last data from server {info.LastDataRecvMs} ms ago. " +
                                (connection.Tuned ? $"Tuned: {backend!.TunedBehaviour(configuration)}." : backend!.StockBehaviour) +
                                $" Network: {network.Summary}", true);
         }
@@ -572,6 +581,7 @@ public sealed class Guardian : IDisposable
         public TuneMemory Memory { get; } = new();
         public Outage? Outage;
         public bool RxSilent;
+        public DateTime? WaitingSince;
         public DateTime DetailUntil;
         public DateTime LastSample;
         public int Outages;
