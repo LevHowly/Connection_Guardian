@@ -125,8 +125,8 @@ zip. Each file has:
   link, `GAME` login/logout (with the logout code)/zone change, `SCRIPT` lines from `drop_internet.sh`,
   `NOTE` your notes, `OTHER` the game's TCP connections outside the monitored ports, `DIAG` internal
   problems (for example a Windows API that is not available);
-- **SAMPLE** lines with the OS's TCP state of every game connection: every 10 s normally, and
-  every 250 ms during an outage and for 30 s after it. The fields differ between Linux and Windows;
+- **SAMPLE** lines with the OS's TCP state of every game connection: every 5 s normally, and
+  every second during an outage and for 30 s after it. Outage and recovery events are still timed to 250 ms. The fields differ between Linux and Windows;
   the legend is in the header.
 
 What to look for: the `SUMMARY` line of each outage gives "PC->server back" (fixed by the plugin) and

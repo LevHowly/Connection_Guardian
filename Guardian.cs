@@ -14,7 +14,8 @@ public sealed class Guardian : IDisposable
     private const int PollIntervalMs = 250;
     private const int RescanIntervalMs = 2000;
     private const int NetworkIntervalMs = 1000;
-    private const int HealthySampleSeconds = 10;
+    private const int HealthySampleSeconds = 5;
+    private const int DetailSampleMs = 1000;
     private const int DetailAfterOutageSeconds = 30;
     private const int RxSilenceMs = 5000;
     private const int MaxEvents = 300;
@@ -211,7 +212,7 @@ public sealed class Guardian : IDisposable
         log.WriteRaw($"Script log:   {SessionLog.ToLinuxPath(log.ScriptLogPath)} (written by scripts/drop_internet.sh, copied below as [SCRIPT])");
         foreach (var line in backend?.LegendLines() ?? [])
             log.WriteRaw(line);
-        log.WriteRaw("  Samples every 10 s when healthy, every 250 ms during an outage and 30 s after it.");
+        log.WriteRaw("  Samples every 5 s when healthy, every 1 s during an outage and 30 s after it (events are timed to 250 ms).");
         log.WriteRaw("==========================================");
     }
 
@@ -407,7 +408,9 @@ public sealed class Guardian : IDisposable
 
         connection.RxSilent = rxSilent;
 
-        if (connection.InDetail(now) || (now - connection.LastSample).TotalSeconds >= HealthySampleSeconds)
+        // Connections are polled every 250 ms so events are timed precisely, but samples are written less often.
+        var sinceSample = (now - connection.LastSample).TotalMilliseconds;
+        if (sinceSample >= (connection.InDetail(now) ? DetailSampleMs : HealthySampleSeconds * 1000))
             SampleLocked(connection, null);
     }
 
