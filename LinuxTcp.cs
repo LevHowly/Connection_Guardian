@@ -430,6 +430,8 @@ public struct TcpInfo
     public ulong BytesSent;
     public ushort TotalRto;
     public uint TotalRtoTimeMs;
+    public uint InFlightBytes;
+    public bool Windows;
 
     public readonly string CaStateName => CaState switch
     {

@@ -101,7 +101,7 @@ public sealed partial class SessionLog : IDisposable
         path.StartsWith(@"Z:\", StringComparison.OrdinalIgnoreCase) ? path[2..].Replace('\\', '/') : path;
 
     /// <summary>Hides the user name in home directory paths.</summary>
-    public static string Redact(string text) => HomeRegex().Replace(text, "~");
+    public static string Redact(string text) => UsersRegex().Replace(HomeRegex().Replace(text, "~"), "%USERPROFILE%");
 
     public void Dispose()
     {
@@ -123,4 +123,7 @@ public sealed partial class SessionLog : IDisposable
 
     [GeneratedRegex(@"(?i)(?:Z:)?[\\/]home[\\/][^\\/\s]+")]
     private static partial Regex HomeRegex();
+
+    [GeneratedRegex(@"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/\s]+")]
+    private static partial Regex UsersRegex();
 }

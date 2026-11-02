@@ -2,7 +2,13 @@
   "Name": "Connection Guardian",
   "Author": "LevHowly",
   "RepoUrl": "https://github.com/LevHowly/Connection_Guardian",
-  "Description": "Keeps the game's connections retrying quickly during short internet outages so you are not logged out, and logs every drop and recovery for diagnosis. Linux (XIVLauncher/Wine) only.",
+  "Description": "Keeps the game's connections alive during short internet outages so you are not logged out, and logs every drop and recovery for diagnosis. Windows and Linux (XIVLauncher/Wine); on Linux it also makes the connection resume within about 1 s.",
   "Punchline": "Survive short internet drops without being logged out.",
-  "Tags": ["network", "disconnect", "linux", "wine"]
+  "Tags": [
+    "network",
+    "disconnect",
+    "windows",
+    "linux",
+    "wine"
+  ]
 }

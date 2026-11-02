@@ -18,7 +18,6 @@ public sealed class Guardian : IDisposable
     private const int DetailAfterOutageSeconds = 30;
     private const int RxSilenceMs = 5000;
     private const int MaxEvents = 300;
-    private const int IpProtoTcp = 6;
 
     private readonly Configuration configuration;
     private readonly SessionLog log;
@@ -37,6 +36,7 @@ public sealed class Guardian : IDisposable
     private DateTime? scriptCut;
     private DateTime? scriptRestored;
     private bool forceRescan = true;
+    private ITcpBackend? backend;
 
     public Guardian(Configuration configuration, SessionLog log, IReadOnlyList<(string Name, string Value)> environment, Action<string, bool> notify)
     {
@@ -50,6 +50,8 @@ public sealed class Guardian : IDisposable
 
     public string Status { get; private set; } = "Starting...";
     public bool Available { get; private set; }
+    public string PlatformName => backend?.Name ?? (Platform.IsWine ? "Linux (Wine)" : "Windows");
+    public bool CanCapRetryInterval => backend?.CanCapRetryInterval ?? Platform.IsWine;
     public string NetworkSummary => network.Summary;
 
     public List<ConnectionSnapshot> GetConnections()
@@ -102,7 +104,8 @@ public sealed class Guardian : IDisposable
     public void Dispose()
     {
         stop.Cancel();
-        thread.Join(2000);
+        // A socket scan can take a few seconds; the thread must be gone before the backend is shut down.
+        var stopped = thread.Join(10000);
         lock (sync)
         {
             foreach (var connection in connections.Values)
@@ -112,24 +115,67 @@ public sealed class Guardian : IDisposable
             }
         }
 
+        if (stopped)
+            backend?.Shutdown();
+        else
+            log.Write("SESSION", "monitor thread did not stop in time");
         log.Write("SESSION", "plugin unloaded, log closed");
-        stop.Dispose();
     }
 
     private void Run()
     {
-        WriteHeader();
-        if (!LinuxTcp.Initialize(out var error))
+        try
         {
-            Status = $"Disabled: {error}";
-            AddEvent("ERROR", $"Connection Guardian cannot run: {error}", true);
+            RunCore();
+        }
+        catch (Exception ex)
+        {
+            // An exception escaping a thread would take the game down with it.
+            Status = $"Stopped: {ex.Message}";
+            log.Write("ERROR", $"monitor stopped: {ex}");
+        }
+    }
+
+    private void RunCore()
+    {
+        // Under Wine the Linux kernel is reachable and allows the full fix; the Windows API is the
+        // fallback (e.g. Wine on macOS) and the only option on Windows.
+        ITcpBackend[] candidates = Platform.IsWine ? [new LinuxBackend(), new WindowsBackend()] : [new WindowsBackend()];
+        var errors = new List<string>();
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                if (candidate.Initialize(out var candidateError))
+                {
+                    backend = candidate;
+                    break;
+                }
+
+                errors.Add($"{candidate.Name}: {candidateError}");
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{candidate.Name}: {ex.Message}");
+            }
+        }
+
+        WriteHeader();
+        foreach (var error in errors)
+            log.Write("SESSION", $"backend not usable: {error}");
+
+        if (backend == null)
+        {
+            Status = $"Disabled: {string.Join(" / ", errors)}";
+            AddEvent("ERROR", $"Connection Guardian cannot run: {string.Join(" / ", errors)}", true);
             return;
         }
 
+        backend.Diagnostic = message => log.Write("DIAG", message);
         Available = true;
-        Status = $"Active (Linux pid {LinuxTcp.LinuxPid}, {LinuxTcp.SyscallPath})";
-        AddEvent("SESSION", $"started. Wine: {LinuxTcp.WineVersion}. {Status}", false);
-        AddEvent("SESSION", $"all TCP connections of the game right now: {DescribeAll(LinuxTcp.ListTcpSockets())}", false);
+        Status = $"Active ({backend.Description})";
+        AddEvent("SESSION", $"started. {Status}", false);
+        AddEvent("SESSION", $"all TCP connections of the game right now: {DescribeAll(backend.ListTcpSockets())}", false);
 
         while (!stop.IsCancellationRequested)
         {
@@ -142,7 +188,8 @@ public sealed class Guardian : IDisposable
                 AddEvent("ERROR", $"monitor error: {ex}", false);
             }
 
-            stop.Token.WaitHandle.WaitOne(PollIntervalMs);
+            if (stop.Token.WaitHandle.WaitOne(PollIntervalMs))
+                break;
         }
     }
 
@@ -152,16 +199,18 @@ public sealed class Guardian : IDisposable
         log.WriteRaw($"Started:      {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}");
         foreach (var (name, value) in environment)
             log.WriteRaw($"{name + ":",-13} {value}");
-        log.WriteRaw($"OS:           {OsDescription()}");
-        log.WriteRaw($"Kernel:       {ReadTrimmed(@"Z:\proc\sys\kernel\osrelease") ?? "unknown (not Linux?)"}");
-        log.WriteRaw($"TCP sysctls:  {Sysctls()}");
+        log.WriteRaw($"Platform:     {(backend != null ? backend.Name : "none usable")} (Wine: {(Platform.IsWine ? "yes" : "no")})");
+        if (backend != null)
+        {
+            foreach (var (name, value) in backend.HeaderLines())
+                log.WriteRaw($"{name + ":",-13} {value}");
+        }
+
         log.WriteRaw($"Settings:     {SettingsLine()}");
         log.WriteRaw($"Session file: {log.FilePath}");
         log.WriteRaw($"Script log:   {SessionLog.ToLinuxPath(log.ScriptLogPath)} (written by scripts/drop_internet.sh, copied below as [SCRIPT])");
-        log.WriteRaw("Legend: SAMPLE lines are the kernel's TCP_INFO for one game connection. Times are in ms:");
-        log.WriteRaw("  rto=current retransmit timeout, bo=backoff count, rtx=retries of the current packet, unacked/lost=packets,");
-        log.WriteRaw("  snd/rcv/ack=ms since we last sent data / received data / received an ACK, rtt=round trip,");
-        log.WriteRaw("  retx=total retransmissions, nrto=total retransmit timeouts, rxB/txB=total bytes received/sent.");
+        foreach (var line in backend?.LegendLines() ?? [])
+            log.WriteRaw(line);
         log.WriteRaw("  Samples every 10 s when healthy, every 250 ms during an outage and 30 s after it.");
         log.WriteRaw("==========================================");
     }
@@ -172,7 +221,7 @@ public sealed class Guardian : IDisposable
         {
             forceRescan = false;
             sinceRescan.Restart();
-            Rescan(LinuxTcp.ListTcpSockets());
+            Rescan(backend!.ListTcpSockets());
         }
 
         PollScriptLog();
@@ -195,10 +244,10 @@ public sealed class Guardian : IDisposable
         {
             foreach (var connection in connections.Values.ToList())
             {
-                if (!LinuxTcp.TryDescribe(connection.Socket.Fd, out var current))
+                if (!backend!.TryDescribe(connection.Socket.Fd, out var current))
                 {
                     // A reset or timed-out socket has no peer any more, but its final state is still readable.
-                    if (LinuxTcp.TryGetTcpInfo(connection.Socket.Fd, out var final) && final.State != 1)
+                    if (backend.TryGetTcpInfo(connection.Socket, out var final) && final.State != 1)
                         Update(connection, final);
                     Closed(connection);
                     continue;
@@ -213,7 +262,7 @@ public sealed class Guardian : IDisposable
                 if (connection.Dirty)
                     ApplyTuning(connection);
 
-                if (LinuxTcp.TryGetTcpInfo(connection.Socket.Fd, out var info))
+                if (backend.TryGetTcpInfo(connection.Socket, out var info))
                     Update(connection, info);
             }
         }
@@ -240,7 +289,7 @@ public sealed class Guardian : IDisposable
                 connections[key] = connection;
                 ApplyTuning(connection);
                 AddEvent("CONN", $"{connection.Name}: game connection found ({socket.Local} -> {socket.Remote}){TuningSummary(connection)}", false);
-                if (LinuxTcp.TryGetTcpInfo(socket.Fd, out var info))
+                if (backend!.TryGetTcpInfo(socket, out var info))
                     Update(connection, info);
             }
         }
@@ -249,48 +298,27 @@ public sealed class Guardian : IDisposable
     private void ApplyTuning(Connection connection)
     {
         connection.Dirty = false;
-        var fd = connection.Socket.Fd;
         if (!configuration.TuneSockets)
         {
             Untune(connection);
-            log.Write("TUNE", $"{connection.Name}: tuning disabled in settings, stock kernel behaviour");
+            log.Write("TUNE", $"{connection.Name}: tuning disabled in settings, stock {(backend!.CanCapRetryInterval ? "kernel" : "Windows")} behaviour");
             return;
         }
 
-        if (connection.OriginalRtoMax < 0)
-        {
-            connection.OriginalRtoMax = (int)LinuxTcp.GetIntOption(fd, IpProtoTcp, LinuxTcp.TcpRtoMaxMs);
-            connection.OriginalUserTimeout = (int)LinuxTcp.GetIntOption(fd, IpProtoTcp, LinuxTcp.TcpUserTimeout);
-        }
-
-        var rtoMax = Math.Clamp(configuration.RtoMaxMs, 1000, 120000);
-        var userTimeout = Math.Clamp(configuration.UserTimeoutSeconds, 30, 3600) * 1000;
-        var rc1 = LinuxTcp.SetIntOption(fd, IpProtoTcp, LinuxTcp.TcpRtoMaxMs, rtoMax);
-        var rc2 = LinuxTcp.SetIntOption(fd, IpProtoTcp, LinuxTcp.TcpUserTimeout, userTimeout);
-        var readRto = LinuxTcp.GetIntOption(fd, IpProtoTcp, LinuxTcp.TcpRtoMaxMs);
-        var readUser = LinuxTcp.GetIntOption(fd, IpProtoTcp, LinuxTcp.TcpUserTimeout);
-        connection.Tuned = rc1 == 0 && rc2 == 0;
-        connection.TuneError = connection.Tuned
-            ? null
-            : $"setsockopt failed (TCP_RTO_MAX_MS: {Errno(rc1)}, TCP_USER_TIMEOUT: {Errno(rc2)}). TCP_RTO_MAX_MS needs Linux 6.15+.";
-        log.Write("TUNE", $"{connection.Name}: original rto_max={connection.OriginalRtoMax} user_timeout={connection.OriginalUserTimeout}; " +
-                          $"set rto_max={rtoMax} ({Errno(rc1)}) user_timeout={userTimeout} ({Errno(rc2)}); read back rto_max={readRto} user_timeout={readUser}");
+        var result = backend!.Tune(connection.Socket, configuration, connection.Memory);
+        connection.Tuned = result.Ok;
+        connection.TuneError = result.Error;
+        log.Write("TUNE", $"{connection.Name}: {result.LogLine}");
         if (connection.TuneError != null)
             AddEvent("TUNE", $"{connection.Name}: {connection.TuneError}", true);
     }
 
-    private static void Untune(Connection connection)
+    private void Untune(Connection connection)
     {
-        if (!connection.Tuned || connection.OriginalRtoMax < 0)
+        if (!connection.Tuned)
             return;
 
-        var fd = connection.Socket.Fd;
-        if (LinuxTcp.TryDescribe(fd, out var current) && current == connection.Socket)
-        {
-            LinuxTcp.SetIntOption(fd, IpProtoTcp, LinuxTcp.TcpRtoMaxMs, connection.OriginalRtoMax);
-            LinuxTcp.SetIntOption(fd, IpProtoTcp, LinuxTcp.TcpUserTimeout, Math.Max(0, connection.OriginalUserTimeout));
-        }
-
+        backend?.Untune(connection.Socket, connection.Memory);
         connection.Tuned = false;
     }
 
@@ -317,7 +345,7 @@ public sealed class Guardian : IDisposable
             connection.Outages++;
             AddEvent("OUTAGE", $"{connection.Name}: OUTAGE #{connection.Outages} - no ACK from server for {info.LastAckRecvMs} ms, " +
                                $"{info.Unacked} packets unacknowledged, last data from server {info.LastDataRecvMs} ms ago. " +
-                               (connection.Tuned ? $"Retrying every <= {configuration.RtoMaxMs} ms." : "Socket NOT tuned: kernel backoff can grow up to 120 s.") +
+                               (connection.Tuned ? $"Tuned: {backend!.TunedBehaviour(configuration)}." : backend!.StockBehaviour) +
                                $" Network: {network.Summary}", true);
         }
 
@@ -329,7 +357,7 @@ public sealed class Guardian : IDisposable
             {
                 outage.AckBack = now;
                 AddEvent("RECOVER", $"{connection.Name}: PC -> server works again: server ACKs our data after {Seconds(now - outage.Start)} s{SinceRestore(now)} " +
-                                    $"({info.TotalRetrans - outage.StartInfo.TotalRetrans} retransmissions, max backoff {outage.MaxBackoff})", true);
+                                    $"({info.TotalRetrans - outage.StartInfo.TotalRetrans} {RetransUnit(info)}, max backoff {outage.MaxBackoff})", true);
             }
 
             if (info.BytesReceived > outage.StartInfo.BytesReceived && outage.DataBack == null)
@@ -349,7 +377,7 @@ public sealed class Guardian : IDisposable
                 if (since >= outage.NextReport)
                 {
                     AddEvent("OUTAGE", $"{connection.Name}: still out after {since:F0} s (PC->server {(outage.AckBack != null ? "ok" : "waiting")}, " +
-                                       $"server->PC {(outage.DataBack != null ? "ok" : "waiting")}, rto {info.RtoUs / 1000} ms, backoff {info.Backoff}, " +
+                                       $"server->PC {(outage.DataBack != null ? "ok" : "waiting")}, {(info.Windows ? string.Empty : $"rto {info.RtoUs / 1000} ms, ")}backoff {info.Backoff}, " +
                                        $"last ACK {info.LastAckRecvMs} ms ago, last data {info.LastDataRecvMs} ms ago). Network: {network.Summary}", false);
                     outage.NextReport = since + 10;
                 }
@@ -385,7 +413,7 @@ public sealed class Guardian : IDisposable
         AddEvent("SUMMARY", $"{connection.Name}: outage {end}. Started {outage.Start:HH:mm:ss.fff}{restoreText}; " +
                             $"PC->server back {(outage.AckBack is { } a ? $"+{Seconds(a - outage.Start)} s" : "never")}, " +
                             $"server->PC back {(outage.DataBack is { } d ? $"+{Seconds(d - outage.Start)} s" : "never")}; " +
-                            $"retransmissions {connection.Info.TotalRetrans - outage.StartInfo.TotalRetrans}, max backoff {outage.MaxBackoff}, tuned {(connection.Tuned ? "yes" : "no")}", true);
+                            $"{RetransUnit(connection.Info)} {connection.Info.TotalRetrans - outage.StartInfo.TotalRetrans}, max backoff {outage.MaxBackoff}, tuned {(connection.Tuned ? "yes" : "no")}", true);
     }
 
     private void SampleLocked(Connection connection, string? reason)
@@ -395,15 +423,13 @@ public sealed class Guardian : IDisposable
 
         var i = connection.Info;
         connection.LastSample = DateTime.Now;
-        log.Write("SAMPLE", $"{connection.Name} {StateName(i.State)}/{i.CaStateName} rto={i.RtoUs / 1000} bo={i.Backoff} rtx={i.Retransmits} " +
-                            $"unacked={i.Unacked} lost={i.Lost} snd={i.LastDataSentMs} rcv={i.LastDataRecvMs} ack={i.LastAckRecvMs} " +
-                            $"rtt={i.RttUs / 1000.0:F1} retx={i.TotalRetrans} nrto={i.TotalRto} rxB={i.BytesReceived} txB={i.BytesSent}" +
-                            (reason != null ? $" ({reason})" : string.Empty));
+        log.Write("SAMPLE", $"{connection.Name} {backend!.FormatSample(i)}" + (reason != null ? $" ({reason})" : string.Empty));
     }
 
     private void Closed(Connection connection)
     {
         connections.Remove(Key(connection.Socket));
+        backend?.Forget(connection.Socket);
         SampleLocked(connection, "last sample before close");
         var last = connection.HasInfo ? connection.Info.State : (byte)0;
         var why = last switch
@@ -466,8 +492,10 @@ public sealed class Guardian : IDisposable
             ? $" ({Seconds(now - restored)} s after the script restored the network)"
             : string.Empty;
 
+    private static string RetransUnit(TcpInfo info) => info.Windows ? "bytes retransmitted" : "retransmissions";
+
     private string TuningSummary(Connection connection) => connection.Tuned
-        ? $", tuned (retry every <= {configuration.RtoMaxMs} ms, give up after {configuration.UserTimeoutSeconds} s)"
+        ? $", tuned ({backend!.TunedBehaviour(configuration)})"
         : configuration.TuneSockets ? ", tuning FAILED" : ", tuning disabled";
 
     private string SettingsLine() =>
@@ -491,42 +519,9 @@ public sealed class Guardian : IDisposable
     private static string DescribeAll(List<TcpSocket> sockets) =>
         sockets.Count == 0 ? "none" : string.Join(", ", sockets.Select(s => $"{s.Local} -> {s.Remote}"));
 
-    private static string OsDescription()
-    {
-        try
-        {
-            var line = File.ReadLines(@"Z:\etc\os-release").FirstOrDefault(l => l.StartsWith("PRETTY_NAME=", StringComparison.Ordinal));
-            return line?["PRETTY_NAME=".Length..].Trim('"') ?? "unknown";
-        }
-        catch (Exception)
-        {
-            return $"unknown ({Environment.OSVersion})";
-        }
-    }
-
-    private static string Sysctls()
-    {
-        string[] names = ["tcp_retries2", "tcp_rto_max_ms", "tcp_rto_min_us", "tcp_frto", "tcp_early_retrans", "tcp_keepalive_time", "tcp_congestion_control"];
-        return string.Join(" ", names.Select(n => $"{n}={ReadTrimmed($@"Z:\proc\sys\net\ipv4\{n}") ?? "n/a"}"));
-    }
-
-    private static string? ReadTrimmed(string path)
-    {
-        try
-        {
-            return File.ReadAllText(path).Trim();
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-    }
-
     private static string Seconds(TimeSpan span) => span.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture);
 
     private static string Key(TcpSocket socket) => $"{socket.Fd}|{socket.Local}|{socket.Remote}";
-
-    private static string Errno(long rc) => rc == 0 ? "ok" : $"errno {-rc}";
 
     public static string StateName(byte state) => state switch
     {
@@ -574,8 +569,7 @@ public sealed class Guardian : IDisposable
         public bool Dirty;
         public bool Tuned;
         public string? TuneError;
-        public int OriginalRtoMax = -1;
-        public int OriginalUserTimeout = -1;
+        public TuneMemory Memory { get; } = new();
         public Outage? Outage;
         public bool RxSilent;
         public DateTime DetailUntil;

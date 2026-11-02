@@ -34,6 +34,7 @@ public sealed class MainWindow : Window
     public override void Draw()
     {
         ImGui.TextColored(guardian.Available ? Good : Bad, guardian.Status);
+        ImGui.TextColored(Dim, $"Platform: {guardian.PlatformName}");
         ImGui.TextColored(Dim, $"Network: {guardian.NetworkSummary}");
 
         DrawLogs();
@@ -110,18 +111,25 @@ public sealed class MainWindow : Window
     private void DrawSettings()
     {
         var changed = false;
+        var canCap = guardian.CanCapRetryInterval;
         var tune = configuration.TuneSockets;
-        if (ImGui.Checkbox("Keep connections retrying quickly during outages", ref tune))
+        if (ImGui.Checkbox(canCap ? "Keep connections retrying quickly during outages" : "Keep connections alive during outages", ref tune))
         {
             configuration.TuneSockets = tune;
             changed = true;
         }
 
-        var rto = configuration.RtoMaxMs;
-        if (ImGui.SliderInt("Max retry interval (ms)", ref rto, 1000, 10000))
+        if (!canCap && ImGui.IsItemHovered())
+            ImGui.SetTooltip("Windows normally drops a connection after about 5 unanswered retries.\nThis makes it keep retrying for the time below. Windows cannot make the retries faster.");
+
+        if (canCap)
         {
-            configuration.RtoMaxMs = rto;
-            changed = true;
+            var rto = configuration.RtoMaxMs;
+            if (ImGui.SliderInt("Max retry interval (ms)", ref rto, 1000, 10000))
+            {
+                configuration.RtoMaxMs = rto;
+                changed = true;
+            }
         }
 
         var userTimeout = configuration.UserTimeoutSeconds;
@@ -201,7 +209,7 @@ public sealed class MainWindow : Window
                 var state = stalled
                     ? $"OUTAGE {(DateTime.Now - c.StallStart!.Value).TotalSeconds:F0}s"
                     : $"{Guardian.StateName(info.State)} {info.CaStateName}";
-                ImGui.TextColored(stalled || info.State != 1 ? Bad : Good, state);
+                ImGui.TextColored(stalled || info.State != 1 ? Bad : Good, info.Windows && !stalled ? Guardian.StateName(info.State) : state);
                 ImGui.TableNextColumn();
                 ImGui.TextColored(c.Tuned ? Good : Bad, c.Tuned ? "yes" : "no");
                 if (c.TuneError != null && ImGui.IsItemHovered())
@@ -209,11 +217,13 @@ public sealed class MainWindow : Window
                 ImGui.TableNextColumn();
                 ImGui.Text($"{info.RttUs / 1000.0:F0} ms");
                 ImGui.TableNextColumn();
-                ImGui.Text($"{info.RtoUs / 1000} ms" + (info.Backoff > 0 ? $" (x{1 << Math.Min((int)info.Backoff, 16)})" : string.Empty));
+                ImGui.Text(info.Windows
+                    ? info.Backoff > 0 ? $"{info.Backoff} timeouts" : "-"
+                    : $"{info.RtoUs / 1000} ms" + (info.Backoff > 0 ? $" (x{1 << Math.Min((int)info.Backoff, 16)})" : string.Empty));
                 ImGui.TableNextColumn();
                 ImGui.Text($"{info.LastDataRecvMs / 1000.0:F1} s ago");
                 ImGui.TableNextColumn();
-                ImGui.Text(info.TotalRetrans.ToString());
+                ImGui.Text(info.Windows ? $"{info.TotalRetrans} B" : info.TotalRetrans.ToString());
             }
             else
             {

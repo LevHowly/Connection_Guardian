@@ -8,11 +8,17 @@ https://raw.githubusercontent.com/LevHowly/Connection_Guardian/main/pluginmaster
 
 In game, open `/xlsettings` → **Experimental** → **Custom Plugin Repositories**, paste this URL,
 tick the checkbox, click **Save**, then install **Connection Guardian** from `/xlplugins`.
-No download, build or script is needed. It works on **Linux (XIVLauncher / Wine)** only.
+No download, build or script is needed. It works on **Windows** and on **Linux (XIVLauncher / Wine)**.
 
-A Dalamud plugin for FFXIV on **Linux (XIVLauncher / Wine)**. It helps the game survive short internet
-outages instead of freezing and then logging you out a minute later. It also shows what happens to the
-game's connections, packet by packet.
+A Dalamud plugin for FFXIV. It helps the game survive short internet outages instead of freezing and
+then logging you out a minute later. It also shows what happens to the game's connections, packet by
+packet, and writes everything to a log you can share.
+
+| | Linux (XIVLauncher / Wine) | Windows |
+|---|---|---|
+| Connection kept alive during the outage | yes, 300 s (`TCP_USER_TIMEOUT`) | yes, 300 s (`TCP_MAXRT`) |
+| Retries at most every 1 s, so traffic resumes ~1 s after the internet is back | yes (`TCP_RTO_MAX_MS`) | no, Windows has no such option |
+| Session log of every drop and recovery | yes | yes |
 
 ## Why you get logged out
 
@@ -23,6 +29,8 @@ your PC stays silent until that timer fires. In the meantime the game sees no tr
 gives up on you.
 
 ## What the plugin does
+
+### On Linux
 
 On every game server connection (TCP ports 54992–55551) the plugin sets:
 
@@ -47,7 +55,19 @@ It then lists `/proc/self/fd` to find the game's sockets. The tuning is only app
 works; otherwise the window shows why it is disabled. The tuning is removed again when the plugin
 is unloaded.
 
-## Measured effect
+### On Windows
+
+Windows gives up on a connection after 5 unanswered retransmissions by default
+(`TcpMaxDataRetransmissions`), which is only about 20–30 s into an outage. The plugin sets `TCP_MAXRT`
+to 300 s on every game connection, so Windows keeps retrying for 5 minutes instead. Windows still
+doubles the wait between retries (up to 60 s), and no per-socket option changes that, so after a long
+outage the game can stay frozen for a while before catching up.
+
+The plugin finds the game's sockets by matching the process's handles against its TCP connection
+table, reads their state with `SIO_TCP_INFO` 4×/s, and writes the same session log as on Linux. If
+something does not work on a particular Windows version, the log says so in `DIAG` / `TUNE` lines.
+
+## Measured effect (Linux)
 
 `scripts/simulate_outage.py` measures this offline (see below). It reports the seconds from "internet
 back" until data flows again. The server is stock Linux in both profiles.
@@ -74,7 +94,8 @@ Thanks for helping! The goal is one zip file that answers every question, so the
 1. **Install:** add the repository URL at the top of this page (`/xlsettings` → *Experimental* →
    *Custom Plugin Repositories*, tick it, *Save*), then install *Connection Guardian* in `/xlplugins`.
 2. **Check it runs:** `/cguard` opens the window. The first line should be green ("Active ...") and,
-   once you are logged in, the game connections should show *Tuned: yes*. If the line is red, just
+   once you are logged in, the game connections should show *Tuned: yes*. This works the same on
+   Windows and Linux. If the line is red, just
    send the logs (step 5); the reason is in there.
 3. **Play normally.** Everything is logged automatically. If something happens (freeze, NPC windows
    not opening, "connection lost", logout), add a note right away: type it in the window's note field
@@ -89,20 +110,24 @@ Thanks for helping! The goal is one zip file that answers every question, so the
 
 ## Logs
 
-One file per game session, in `~/.xlcore/pluginConfigs/ConnectionGuardian/logs/session-<date>.log`
-(the last 30 are kept). The window has buttons to open the current file, the folder, and to create the
+One file per game session, in the plugin's config folder (the last 30 are kept):
+`%APPDATA%\XIVLauncher\pluginConfigs\ConnectionGuardian\logs\session-<date>.log` on Windows,
+`~/.xlcore/pluginConfigs/ConnectionGuardian/logs/session-<date>.log` on Linux. The window has buttons to open the current file, the folder, and to create the
 zip. Each file has:
 
-- a **header**: plugin, Dalamud, distro, kernel, Wine build, the kernel's TCP settings, plugin settings;
+- a **header**: plugin, Dalamud, platform, OS version (distro, kernel and Wine build on Linux), the OS's
+  TCP settings, plugin settings;
 - **events**, tagged by category:
   `CONN` connection found or state change, `TUNE` settings applied and read back,
   `OUTAGE` no ACK from the server for 2 s, `RECOVER` each direction working again,
   `SUMMARY` one line per outage with all timings, `CLOSE` who ended a connection (server / reset or
   timeout / game), `SILENCE` server sent nothing for 5 s, `NET` default route, interface state and Wi-Fi
   link, `GAME` login/logout (with the logout code)/zone change, `SCRIPT` lines from `drop_internet.sh`,
-  `NOTE` your notes, `OTHER` the game's TCP connections outside the monitored ports;
-- **SAMPLE** lines with the kernel's TCP state of every game connection: every 10 s normally, and
-  every 250 ms during an outage and for 30 s after it. The legend is in the header.
+  `NOTE` your notes, `OTHER` the game's TCP connections outside the monitored ports, `DIAG` internal
+  problems (for example a Windows API that is not available);
+- **SAMPLE** lines with the OS's TCP state of every game connection: every 10 s normally, and
+  every 250 ms during an outage and for 30 s after it. The fields differ between Linux and Windows;
+  the legend is in the header.
 
 What to look for: the `SUMMARY` line of each outage gives "PC->server back" (fixed by the plugin) and
 "server->PC back" (the server's own retry timer); a `CLOSE` line followed by `GAME ... LOGGED OUT`
@@ -124,6 +149,9 @@ Wine path, e.g. `Z:\home\<you>\Connection_Guardian\bin\Release\ConnectionGuardia
 push, and create a GitHub release `v<version>` with `latest.zip` attached.
 
 ## Testing
+
+The scripts below are for Linux. On Windows, a real drop can be produced by unplugging the cable or
+disabling the network adapter for 20–30 s while logged in.
 
 **For real, in game:** `scripts/drop_internet.sh`
 

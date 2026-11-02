@@ -3,13 +3,14 @@
     "Author": "LevHowly",
     "Name": "Connection Guardian",
     "InternalName": "ConnectionGuardian",
-    "AssemblyVersion": "0.2.0.0",
-    "Description": "Keeps the game's connections retrying quickly during short internet outages so you are not logged out, and logs every drop and recovery for diagnosis. Linux (XIVLauncher/Wine) only.",
+    "AssemblyVersion": "0.3.0.0",
+    "Description": "Keeps the game's connections alive during short internet outages so you are not logged out, and logs every drop and recovery for diagnosis. Windows and Linux (XIVLauncher/Wine); on Linux it also makes the connection resume within about 1 s.",
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/LevHowly/Connection_Guardian",
     "Tags": [
       "network",
       "disconnect",
+      "windows",
       "linux",
       "wine"
     ],
@@ -20,9 +21,9 @@
     "LoadPriority": 0,
     "Punchline": "Survive short internet drops without being logged out.",
     "AcceptsFeedback": true,
-    "DownloadLinkInstall": "https://github.com/LevHowly/Connection_Guardian/releases/download/v0.2.0/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/LevHowly/Connection_Guardian/releases/download/v0.2.0/latest.zip",
-    "DownloadLinkTesting": "https://github.com/LevHowly/Connection_Guardian/releases/download/v0.2.0/latest.zip",
+    "DownloadLinkInstall": "https://github.com/LevHowly/Connection_Guardian/releases/download/v0.3.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/LevHowly/Connection_Guardian/releases/download/v0.3.0/latest.zip",
+    "DownloadLinkTesting": "https://github.com/LevHowly/Connection_Guardian/releases/download/v0.3.0/latest.zip",
     "IsHide": false,
     "IsTestingExclusive": false
   }
