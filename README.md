@@ -1,5 +1,15 @@
 # Connection Guardian
 
+**Dalamud custom repository URL:**
+
+```text
+https://raw.githubusercontent.com/LevHowly/Connection_Guardian/main/pluginmaster.json
+```
+
+In game, open `/xlsettings` → **Experimental** → **Custom Plugin Repositories**, paste this URL,
+tick the checkbox, click **Save**, then install **Connection Guardian** from `/xlplugins`.
+No download, build or script is needed. It works on **Linux (XIVLauncher / Wine)** only.
+
 A Dalamud plugin for FFXIV on **Linux (XIVLauncher / Wine)**. It helps the game survive short internet
 outages instead of freezing and then logging you out a minute later. It also shows what happens to the
 game's connections, packet by packet.
@@ -54,31 +64,25 @@ back" until data flows again. The server is stock Linux in both profiles.
 so the server hears from you again almost immediately, which is what stops it from timing you out.
 Server → PC traffic still follows the server's own retry schedule, so after a long outage the game
 can still look frozen for a few seconds (up to ~20 s after a 30 s outage) before catching up.
-If you are still logged out, `events.log` shows whether the server closed the connection or the
+If you are still logged out, the session log shows whether the server closed the connection or the
 game did.
 
 ## For testers: what to do and what to send back
 
 Thanks for helping! The goal is one zip file that answers every question, so there is no back and forth.
 
-1. **Install:** `dotnet build -c Release` in this folder (needs the .NET 10 SDK). In game, open
-   `/xlsettings` → *Experimental* → *Dev Plugin Locations*, add the full path to
-   `bin/Release/ConnectionGuardian.dll` written as `Z:\home\<you>\...\bin\Release\ConnectionGuardian.dll`,
-   then enable *Connection Guardian* in `/xlplugins` → *Dev Tools*.
+1. **Install:** add the repository URL at the top of this page (`/xlsettings` → *Experimental* →
+   *Custom Plugin Repositories*, tick it, *Save*), then install *Connection Guardian* in `/xlplugins`.
 2. **Check it runs:** `/cguard` opens the window. The first line should be green ("Active ...") and,
    once you are logged in, the game connections should show *Tuned: yes*. If the line is red, just
    send the logs (step 5); the reason is in there.
 3. **Play normally.** Everything is logged automatically. If something happens (freeze, NPC windows
    not opening, "connection lost", logout), add a note right away: type it in the window's note field
    or use `/cguard note what happened`. Notes are timestamped, so a few words are enough.
-4. **Optional, controlled test** (from a terminal in this folder, while logged in somewhere safe,
-   not in a duty):
-   ```sh
-   scripts/drop_internet.sh -m game 30     # FFXIV traffic silently dropped for 30 s (needs sudo)
-   scripts/drop_internet.sh -m nm 30       # alternative without sudo: all networking off for 30 s
-   ```
-   For a comparison, run it once with *Keep connections retrying quickly* unchecked in the
-   settings and once with it checked. The script's timeline goes into the same log folder automatically.
+4. **Keep playing until you have had a few drops**, ideally including one that logged you out.
+   Nothing to do during a drop: the plugin records it on its own. Reloading or restarting the game is
+   fine; every session gets its own log file. *(Optional, only if you are on Linux and comfortable with a
+   terminal: `scripts/drop_internet.sh` from this repo cuts the internet on demand; see [Testing](#testing).)*
 5. **Send the logs:** click **Create zip to share** in the `/cguard` window. It creates
    `ConnectionGuardian-logs-<date>.zip` and opens its folder. Send that file. It contains every
    session log and the script log; home directory paths are replaced with `~`.
@@ -104,20 +108,20 @@ What to look for: the `SUMMARY` line of each outage gives "PC->server back" (fix
 "server->PC back" (the server's own retry timer); a `CLOSE` line followed by `GAME ... LOGGED OUT`
 says which side gave up.
 
-## Build and install
+## Build and install from source
 
 ```sh
-dotnet build -c Release
+dotnet build -c Release          # needs the .NET 10 SDK
 ```
 
-In game, open `/xlsettings` → *Experimental* → *Dev Plugin Locations*, add
-
-```
-Z:\home\astark\dev\Connection_Guardian\bin\Release\ConnectionGuardian.dll
-```
-
-and then enable *Connection Guardian* in `/xlplugins` → *Dev Tools*. Open the window with `/cguard`;
+In game, open `/xlsettings` → *Experimental* → *Dev Plugin Locations*, add the DLL path written as a
+Wine path, e.g. `Z:\home\<you>\Connection_Guardian\bin\Release\ConnectionGuardian.dll`, then enable
+*Connection Guardian* in `/xlplugins` → *Dev Tools*. Open the window with `/cguard`;
 `/cguard note <text>` adds a note to the log.
+
+**Publishing a release:** bump `<Version>` in `ConnectionGuardian.csproj`, run
+`scripts/package-release.sh` (builds `build/release/latest.zip` and updates `pluginmaster.json`), commit,
+push, and create a GitHub release `v<version>` with `latest.zip` attached.
 
 ## Testing
 
